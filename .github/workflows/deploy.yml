@@ -1,0 +1,138 @@
+# -----------------------------------------------------------------------------
+# CI/CD pipeline
+#
+#   Pull request to main:  test  ->  terraform plan    (shows changes, changes nothing)
+#   Push to main:          test  ->  terraform apply   ->  build + push image  ->  deploy to Kubernetes
+#
+# Needs (see README, "GitHub setup"):
+#   secret   AWS_ROLE_ARN         - IAM role created by terraform/bootstrap
+#   variable ADMIN_PRINCIPAL_ARN  - your IAM user/role, gets kubectl access
+# -----------------------------------------------------------------------------
+name: Deploy
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# id-token: write is needed to log in to AWS with OIDC (no AWS keys stored in GitHub).
+permissions:
+  id-token: write
+  contents: read
+
+# Never run two pipelines at the same time - they would change the same
+# resources. A new run waits until the previous one has finished.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  PROJECTNAME: ugallin
+  AWS_REGION: eu-central-1
+
+jobs:
+  # --- 1. Test: unit test + check that the Docker image builds ---------------
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Run unit tests
+        run: python -m unittest -v
+
+      - name: Build the Docker image (test only, not pushed)
+        run: docker build -t ${{ env.PROJECTNAME }}-app:test .
+
+  # --- 2. Terraform: plan on pull requests, apply on main ---------------------
+  terraform:
+    needs: test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform/infra
+    env:
+      # Terraform reads TF_VAR_<name> environment variables as input variables.
+      TF_VAR_admin_principal_arn: ${{ vars.ADMIN_PRINCIPAL_ARN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v4
+
+      - name: Terraform fmt (fails if the code is not formatted)
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init (connects to the S3 state)
+        run: terraform init -input=false
+
+      - name: Terraform validate
+        run: terraform validate
+
+      - name: Terraform plan
+        if: github.event_name == 'pull_request'
+        run: terraform plan -input=false
+
+      # -auto-approve: nobody is there to type "yes". The review happens in the PR.
+      - name: Terraform apply
+        if: github.event_name == 'push'
+        run: terraform apply -input=false -auto-approve
+
+  # --- 3. Build the image, push it to ECR and deploy it (main only) -----------
+  deploy:
+    needs: terraform
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # The image is tagged with the commit SHA, so every version is unique and
+      # Kubernetes notices the change and replaces the pods.
+      - name: Build and push the image
+        id: image
+        run: |
+          IMAGE=${{ steps.ecr.outputs.registry }}/${{ env.PROJECTNAME }}-app:${{ github.sha }}
+          docker build -t "$IMAGE" app
+          docker push "$IMAGE"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Connect kubectl to the cluster
+        run: aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.PROJECTNAME }}
+
+      # Put the real image name into the manifest and apply it.
+      - name: Deploy to Kubernetes
+        run: |
+          sed "s|IMAGE_PLACEHOLDER|${{ steps.image.outputs.image }}|" k8s/app.yaml | kubectl apply -f -
+          kubectl rollout status deployment/${{ env.PROJECTNAME }}-app --timeout=180s
+
+      - name: Show the app URL
+        run: |
+          DNS=$(aws elbv2 describe-load-balancers --names ${{ env.PROJECTNAME }}-nlb --query 'LoadBalancers[0].DNSName' --output text)
+          echo "App URL: http://$DNS" | tee -a "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,16 @@
+# Terraform: downloaded providers (recreated by `terraform init`)
+.terraform/
+
+# Terraform state files - never commit them, they can contain secrets.
+# (infra state lives in S3; bootstrap state stays local - do not delete it!)
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+
+# Your personal variable values
+*.tfvars
+
+# Python
+__pycache__/
+*.pyc

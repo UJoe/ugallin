@@ -1,0 +1,4 @@
+# Keep the image small: only app.py is needed inside it.
+__pycache__/
+*.pyc
+test_app.py
