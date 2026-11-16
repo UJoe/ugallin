@@ -96,13 +96,29 @@ resource "aws_iam_role" "github_actions" {
   })
 }
 
-# Permissions: WHAT the role may do. The pipeline creates a VPC, an EKS cluster,
-# IAM roles, a load balancer and an ECR repository, which needs very broad
-# rights - so, to keep it simple, we give it AdministratorAccess.
-# This is acceptable for a learning project because only our own repository can
-# use the role (see the trust policy above). In a real company you would give
-# only the permissions that are actually needed.
-resource "aws_iam_role_policy_attachment" "github_actions_admin" {
+# Permissions: WHAT the role may do. Two standard AWS-managed policies:
+#
+#   PowerUserAccess - every AWS service (EC2, EKS, ELB, ECR, S3, ...) EXCEPT
+#                     IAM, Organizations and account settings.
+#   IAMFullAccess   - IAM, which the pipeline needs to create the EKS cluster
+#                     and node roles (iam.tf) and hand them to EKS (iam:PassRole).
+#                     PowerUserAccess alone would fail at the first IAM role.
+#
+# Note: AmazonEKSClusterAdminPolicy is NOT an IAM policy - it is an EKS access
+# policy (rights inside Kubernetes, for kubectl). It is given to this role in
+# terraform/infra/eks.tf (access entries), but it cannot create AWS resources.
+#
+# Security note: together these two are almost as powerful as
+# AdministratorAccess (IAMFullAccess could even grant more rights). They only
+# block Organizations and account-level actions (e.g. closing the account).
+# What really protects the account is the trust policy above: only workflows
+# of our own GitHub repository can use this role.
+resource "aws_iam_role_policy_attachment" "github_actions" {
+  for_each = toset([
+    "arn:aws:iam::aws:policy/PowerUserAccess",
+    "arn:aws:iam::aws:policy/IAMFullAccess",
+  ])
+
   role       = aws_iam_role.github_actions.name
-  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
+  policy_arn = each.value
 }

@@ -1,5 +1,5 @@
 # Small official Python image (Debian based, so it also contains bash -
-# needed to "enter the container using bash", see README).
+# needed to "enter the container using bash".
 FROM python:3.13-slim
 
 WORKDIR /app

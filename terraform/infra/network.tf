@@ -41,7 +41,7 @@ resource "aws_vpc" "main" {
 
 # --- 2. Subnets: 2 public + 2 private, each pair in a different AZ ------------
 # cidrsubnet() cuts the /16 VPC range into /24 pieces:
-#   public:  10.0.0.0/24, 10.0.1.0/24     private: 10.0.10.0/24, 10.0.11.0/24
+#   public:  10.0.0.0/24, 10.0.1.0/24     private: 10.0.2.0/24, 10.0.3.0/24
 resource "aws_subnet" "public" {
   count             = 2
   vpc_id            = aws_vpc.main.id
@@ -58,14 +58,14 @@ resource "aws_subnet" "private" {
   count             = 2
   vpc_id            = aws_vpc.main.id
   availability_zone = local.azs[count.index]
-  cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index + 10)
+  # Continue numbering right after the public subnets, so the ranges form an
+  # unbroken chain: with 2 public subnets the private ones get index 2 and 3.
+  cidr_block = cidrsubnet(var.vpc_cidr, 8, count.index + length(aws_subnet.public))
 
   tags = { Name = "${var.projectname}-private-${count.index + 1}" }
 }
 
 # --- 3. Internet Gateway -----------------------------------------------------
-# The VPC's door to the internet. It is attached to the VPC; the public
-# subnets use it through the public route table below.
 resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
 
@@ -73,10 +73,6 @@ resource "aws_internet_gateway" "main" {
 }
 
 # --- 4. NAT Gateway ----------------------------------------------------------
-# Lets the private worker nodes start connections to the internet (pull
-# images, talk to AWS APIs) while the internet still cannot reach them.
-# It sits in a public subnet and needs a fixed public IP (Elastic IP).
-# One NAT Gateway is enough here (one per AZ would be more resilient, but costs more).
 resource "aws_eip" "nat" {
   domain = "vpc"
 
@@ -95,8 +91,8 @@ resource "aws_nat_gateway" "main" {
 }
 
 # --- 5. Route tables ---------------------------------------------------------
-# A route table tells a subnet where to send traffic. Traffic inside the VPC
-# is always routed automatically; we only add the "everything else"
+# Traffic inside the VPC  is always routed automatically
+# we only add the "everything else"
 # (0.0.0.0/0) route.
 
 # Public subnets: everything else -> Internet Gateway.
@@ -136,7 +132,7 @@ resource "aws_route_table_association" "private" {
 }
 
 # --- 6. Network ACLs ---------------------------------------------------------
-# A NACL is a firewall for a whole subnet. Unlike security groups, NACLs are
+# Unlike security groups, NACLs are
 # STATELESS: replies are not allowed automatically, so we must also allow the
 # "ephemeral" ports 1024-65535 that replies come back on.
 # Rules are checked from the lowest rule_no up; anything not allowed is denied.

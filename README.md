@@ -62,7 +62,7 @@ Creates the S3 bucket for the Terraform state and the IAM role the pipeline logs
 ```bash
 cd terraform/bootstrap
 terraform init
-terraform apply          # review the plan (5 resources), type "yes"
+terraform apply          # review the plan (6 resources), type "yes"
 ```
 
 Note the two outputs: `tfstate_bucket` and `github_actions_role_arn`.
@@ -186,7 +186,7 @@ terraform destroy        # review: ~41 resources, type "yes"
 
 # 2. Bootstrap: state bucket + GitHub Actions role (~1 min)
 cd ../bootstrap
-terraform destroy        # 5 resources, type "yes"
+terraform destroy        # 6 resources, type "yes"
 
 # 3. Local leftovers (optional)
 kubectl config delete-context arn:aws:eks:eu-central-1:362099375729:cluster/ugallin
